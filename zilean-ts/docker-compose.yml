@@ -1,0 +1,51 @@
+services:
+  zilean:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zilean
+    restart: unless-stopped
+    ports:
+      - "8181:8181"
+    environment:
+      - DATABASE_URL=postgresql://zilean:zilean@postgres:5432/zilean
+      - ZILEAN_HOST=0.0.0.0
+      - ZILEAN_PORT=8181
+      # Uncomment and set these to configure scraping
+      # - ZILEAN_DMM_ENABLE_SCRAPING=true
+      # - ZILEAN_DMM_SCHEDULE=0 * * * *
+      # - ZILEAN_INGESTION_ENABLE_SCRAPING=true
+      # - ZILEAN_INGESTION_SCHEDULE=0 */6 * * *
+    volumes:
+      - zilean_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8181/health/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: zilean-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=zilean
+      - POSTGRES_PASSWORD=zilean
+      - POSTGRES_DB=zilean
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zilean -d zilean"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  zilean_data:
+  postgres_data:

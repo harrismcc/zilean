@@ -1,0 +1,39 @@
+{
+  "name": "zilean",
+  "version": "1.0.0",
+  "description": "Torrent metadata aggregator and Torznab indexer",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "lint": "eslint src/",
+    "format": "prettier --write src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "@hono/zod-validator": "^0.4.0",
+    "drizzle-orm": "^0.36.0",
+    "postgres": "^3.4.5",
+    "zod": "^3.23.8",
+    "parse-torrent-title": "^5.7.0",
+    "croner": "^9.0.0",
+    "nanoid": "^5.0.8",
+    "fast-xml-parser": "^4.5.0",
+    "node-html-parser": "^6.1.13"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.28.0",
+    "typescript": "^5.6.3",
+    "prettier": "^3.3.3",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0"
+  }
+}
