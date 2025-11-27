@@ -1,44 +1,97 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
 import { getConfig } from "../config";
 import * as schema from "./schema";
 
 let db: ReturnType<typeof drizzle<typeof schema>> | null = null;
-let sql: ReturnType<typeof postgres> | null = null;
+let sqlite: Database | null = null;
 
 export function getDb() {
   if (!db) {
     const config = getConfig();
-    sql = postgres(config.database.connectionString, {
-      max: config.database.maxConnections,
-      idle_timeout: 20,
-      connect_timeout: 10,
-    });
-    db = drizzle(sql, { schema });
+    const dbPath = config.database.connectionString;
+
+    // Ensure directory exists
+    const dir = dirname(dbPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    sqlite = new Database(dbPath);
+
+    // Enable WAL mode for better concurrent performance
+    sqlite.exec("PRAGMA journal_mode = WAL");
+    sqlite.exec("PRAGMA synchronous = NORMAL");
+    sqlite.exec("PRAGMA cache_size = -64000"); // 64MB cache
+    sqlite.exec("PRAGMA temp_store = MEMORY");
+
+    db = drizzle(sqlite, { schema });
   }
   return db;
 }
 
-export function getSql() {
-  if (!sql) {
-    getDb(); // Initialize sql client
+export function getSqlite() {
+  if (!sqlite) {
+    getDb(); // Initialize sqlite client
   }
-  return sql!;
+  return sqlite!;
 }
 
 export async function initializeDatabase() {
-  const client = getSql();
+  const database = getDb();
+  const client = getSqlite();
 
-  // Enable pg_trgm extension for fuzzy text search
-  await client`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
+  // Create tables if they don't exist (handled by Drizzle migrations, but we can ensure indexes)
+  console.log("Database initialized");
 
-  console.log("Database extensions initialized");
+  // Create FTS5 virtual table for full-text search if it doesn't exist
+  try {
+    client.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS torrents_fts USING fts5(
+        info_hash,
+        cleaned_parsed_title,
+        content='torrents',
+        content_rowid='rowid'
+      );
+    `);
+
+    // Create triggers to keep FTS index in sync
+    client.exec(`
+      CREATE TRIGGER IF NOT EXISTS torrents_ai AFTER INSERT ON torrents BEGIN
+        INSERT INTO torrents_fts(info_hash, cleaned_parsed_title)
+        VALUES (new.info_hash, new.cleaned_parsed_title);
+      END;
+    `);
+
+    client.exec(`
+      CREATE TRIGGER IF NOT EXISTS torrents_ad AFTER DELETE ON torrents BEGIN
+        INSERT INTO torrents_fts(torrents_fts, info_hash, cleaned_parsed_title)
+        VALUES ('delete', old.info_hash, old.cleaned_parsed_title);
+      END;
+    `);
+
+    client.exec(`
+      CREATE TRIGGER IF NOT EXISTS torrents_au AFTER UPDATE ON torrents BEGIN
+        INSERT INTO torrents_fts(torrents_fts, info_hash, cleaned_parsed_title)
+        VALUES ('delete', old.info_hash, old.cleaned_parsed_title);
+        INSERT INTO torrents_fts(info_hash, cleaned_parsed_title)
+        VALUES (new.info_hash, new.cleaned_parsed_title);
+      END;
+    `);
+
+    console.log("FTS5 full-text search initialized");
+  } catch (error) {
+    // FTS might already exist or tables not yet created
+    console.log("FTS5 setup skipped (will be created after migrations)");
+  }
 }
 
 export async function closeDatabase() {
-  if (sql) {
-    await sql.end();
-    sql = null;
+  if (sqlite) {
+    sqlite.close();
+    sqlite = null;
     db = null;
   }
 }

@@ -8,8 +8,9 @@ A torrent metadata aggregator and Torznab indexer, rewritten in TypeScript with 
 - **Generic Ingestion**: Supports importing from Zurg instances, other Zilean instances, and generic HTTP endpoints
 - **Torznab API**: Standard Torznab API for integration with Sonarr, Radarr, and other media managers
 - **IMDB Integration**: Search and match IMDB metadata
-- **Full-Text Search**: PostgreSQL-powered trigram search for fuzzy matching
+- **Full-Text Search**: SQLite FTS5-powered full-text search
 - **Blacklist Management**: Block unwanted torrents from search results
+- **Zero Dependencies**: Uses embedded SQLite - no external database required
 
 ## Quick Start
 
@@ -19,7 +20,7 @@ A torrent metadata aggregator and Torznab indexer, rewritten in TypeScript with 
 docker compose up -d
 ```
 
-This starts both Zilean and PostgreSQL. Access the API at `http://localhost:8181`.
+Access the API at `http://localhost:8181`. The SQLite database is stored in a Docker volume.
 
 ### Local Development
 
@@ -28,26 +29,17 @@ This starts both Zilean and PostgreSQL. Access the API at `http://localhost:8181
    bun install
    ```
 
-2. Start PostgreSQL (with pg_trgm extension):
-   ```bash
-   docker run -d --name zilean-postgres \
-     -e POSTGRES_USER=zilean \
-     -e POSTGRES_PASSWORD=zilean \
-     -e POSTGRES_DB=zilean \
-     -p 5432:5432 \
-     postgres:16-alpine \
-     -c 'shared_preload_libraries=pg_trgm'
-   ```
-
-3. Run database migrations:
+2. Run database migrations:
    ```bash
    bun run db:push
    ```
 
-4. Start the development server:
+3. Start the development server:
    ```bash
    bun run dev
    ```
+
+That's it! No external database needed - SQLite is embedded.
 
 ## Configuration
 
@@ -57,7 +49,7 @@ Configuration is loaded from environment variables and `data/config.json`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://zilean:zilean@localhost:5432/zilean` |
+| `DATABASE_URL` | SQLite database path | `./data/zilean.db` |
 | `ZILEAN_PORT` | HTTP server port | `8181` |
 | `ZILEAN_HOST` | HTTP server host | `0.0.0.0` |
 | `ZILEAN_API_KEY` | API key (auto-generated if not set) | - |
@@ -179,8 +171,9 @@ bun run db:studio
 
 - **Runtime**: Bun
 - **Framework**: Hono
-- **Database**: PostgreSQL with Drizzle ORM
-- **Search**: PostgreSQL pg_trgm extension
+- **Database**: SQLite (embedded via Bun)
+- **ORM**: Drizzle ORM
+- **Search**: SQLite FTS5 full-text search
 - **Scheduling**: Croner
 
 ## License

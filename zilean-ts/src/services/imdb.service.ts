@@ -1,7 +1,6 @@
-import { eq, sql, inArray } from "drizzle-orm";
-import { getDb, getSql } from "../db/client";
+import { eq, and, inArray, like } from "drizzle-orm";
+import { getDb, getSqlite } from "../db/client";
 import { imdbFiles, type NewImdbFile, type ImdbFile } from "../db/schema";
-import { getConfig } from "../config";
 
 export interface ImdbSearchResult {
   imdbId: string;
@@ -9,7 +8,6 @@ export interface ImdbSearchResult {
   year: number | null;
   category: string | null;
   adult: boolean;
-  similarity?: number;
 }
 
 export interface ImdbSearchFilter {
@@ -20,90 +18,40 @@ export interface ImdbSearchFilter {
 }
 
 /**
- * Search IMDB entries by title using trigram similarity
+ * Search IMDB entries by title using LIKE
  */
 export async function searchImdb(
   filter: ImdbSearchFilter
 ): Promise<ImdbSearchResult[]> {
-  const config = getConfig();
-  const minScore = config.imdb.minimumScoreMatch;
+  const db = getDb();
   const limit = filter.limit || 20;
-  const client = getSql();
 
-  let results;
+  // Build search pattern
+  const searchPattern = `%${filter.query.toLowerCase().replace(/\s+/g, "%")}%`;
 
-  if (filter.year && filter.category) {
-    results = await client`
-      SELECT
-        imdb_id,
-        title,
-        year,
-        category,
-        adult,
-        similarity(title, ${filter.query.toLowerCase()}) as similarity
-      FROM imdb_files
-      WHERE
-        similarity(title, ${filter.query.toLowerCase()}) > ${minScore}
-        AND year = ${filter.year}
-        AND category = ${filter.category}
-      ORDER BY similarity DESC
-      LIMIT ${limit}
-    `;
-  } else if (filter.year) {
-    results = await client`
-      SELECT
-        imdb_id,
-        title,
-        year,
-        category,
-        adult,
-        similarity(title, ${filter.query.toLowerCase()}) as similarity
-      FROM imdb_files
-      WHERE
-        similarity(title, ${filter.query.toLowerCase()}) > ${minScore}
-        AND year = ${filter.year}
-      ORDER BY similarity DESC
-      LIMIT ${limit}
-    `;
-  } else if (filter.category) {
-    results = await client`
-      SELECT
-        imdb_id,
-        title,
-        year,
-        category,
-        adult,
-        similarity(title, ${filter.query.toLowerCase()}) as similarity
-      FROM imdb_files
-      WHERE
-        similarity(title, ${filter.query.toLowerCase()}) > ${minScore}
-        AND category = ${filter.category}
-      ORDER BY similarity DESC
-      LIMIT ${limit}
-    `;
-  } else {
-    results = await client`
-      SELECT
-        imdb_id,
-        title,
-        year,
-        category,
-        adult,
-        similarity(title, ${filter.query.toLowerCase()}) as similarity
-      FROM imdb_files
-      WHERE similarity(title, ${filter.query.toLowerCase()}) > ${minScore}
-      ORDER BY similarity DESC
-      LIMIT ${limit}
-    `;
+  // Build conditions
+  const conditions = [like(imdbFiles.title, searchPattern)];
+
+  if (filter.year) {
+    conditions.push(eq(imdbFiles.year, filter.year));
   }
 
+  if (filter.category) {
+    conditions.push(eq(imdbFiles.category, filter.category));
+  }
+
+  const results = await db
+    .select()
+    .from(imdbFiles)
+    .where(and(...conditions))
+    .limit(limit);
+
   return results.map((r) => ({
-    imdbId: r.imdb_id as string,
-    title: r.title as string,
-    year: r.year as number | null,
-    category: r.category as string | null,
-    adult: r.adult as boolean,
-    similarity: r.similarity as number,
+    imdbId: r.imdbId,
+    title: r.title,
+    year: r.year,
+    category: r.category,
+    adult: r.adult ?? false,
   }));
 }
 
@@ -176,9 +124,9 @@ export async function storeImdbEntries(
  * Get IMDB entry count
  */
 export async function getImdbCount(): Promise<number> {
-  const client = getSql();
-  const result = await client`SELECT COUNT(*) as count FROM imdb_files`;
-  return parseInt(result[0].count as string, 10);
+  const sqlite = getSqlite();
+  const result = sqlite.prepare("SELECT COUNT(*) as count FROM imdb_files").get() as { count: number } | undefined;
+  return result?.count ?? 0;
 }
 
 /**

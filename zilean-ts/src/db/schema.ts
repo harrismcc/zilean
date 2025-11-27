@@ -1,148 +1,127 @@
 import {
-  pgTable,
-  varchar,
+  sqliteTable,
   text,
-  boolean,
   integer,
-  timestamp,
-  jsonb,
   index,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
+} from "drizzle-orm/sqlite-core";
 
 // Torrent categories
 export type TorrentCategory = "movie" | "tvSeries" | "xxx" | "other";
 
 // Main torrents table
-export const torrents = pgTable(
+export const torrents = sqliteTable(
   "torrents",
   {
-    infoHash: varchar("info_hash", { length: 40 }).primaryKey(),
+    infoHash: text("info_hash").primaryKey(),
     rawTitle: text("raw_title").notNull(),
     parsedTitle: text("parsed_title"),
     normalizedTitle: text("normalized_title"),
     cleanedParsedTitle: text("cleaned_parsed_title"),
 
     // Content classification
-    category: varchar("category", { length: 20 }).$type<TorrentCategory>(),
-    imdbId: varchar("imdb_id", { length: 20 }),
-    isAdult: boolean("is_adult").default(false),
+    category: text("category").$type<TorrentCategory>(),
+    imdbId: text("imdb_id"),
+    isAdult: integer("is_adult", { mode: "boolean" }).default(false),
 
     // Video properties
     year: integer("year"),
-    resolution: varchar("resolution", { length: 20 }),
-    quality: varchar("quality", { length: 50 }),
-    codec: varchar("codec", { length: 50 }),
-    hdr: jsonb("hdr").$type<string[]>(),
+    resolution: text("resolution"),
+    quality: text("quality"),
+    codec: text("codec"),
+    hdr: text("hdr", { mode: "json" }).$type<string[]>(),
     bitDepth: integer("bit_depth"),
 
     // Audio
-    audio: jsonb("audio").$type<string[]>(),
-    channels: varchar("channels", { length: 20 }),
-    languages: jsonb("languages").$type<string[]>(),
+    audio: text("audio", { mode: "json" }).$type<string[]>(),
+    channels: text("channels"),
+    languages: text("languages", { mode: "json" }).$type<string[]>(),
 
-    // Series info
-    seasons: jsonb("seasons").$type<number[]>(),
-    episodes: jsonb("episodes").$type<number[]>(),
-    volumes: jsonb("volumes").$type<number[]>(),
+    // Series info (stored as JSON arrays)
+    seasons: text("seasons", { mode: "json" }).$type<number[]>(),
+    episodes: text("episodes", { mode: "json" }).$type<number[]>(),
+    volumes: text("volumes", { mode: "json" }).$type<number[]>(),
 
     // Content flags
-    trash: boolean("trash").default(false),
-    complete: boolean("complete").default(false),
-    dubbed: boolean("dubbed").default(false),
-    subbed: boolean("subbed").default(false),
-    extended: boolean("extended").default(false),
-    converted: boolean("converted").default(false),
-    hardcoded: boolean("hardcoded").default(false),
-    proper: boolean("proper").default(false),
-    repack: boolean("repack").default(false),
-    retail: boolean("retail").default(false),
-    upscaled: boolean("upscaled").default(false),
-    remastered: boolean("remastered").default(false),
-    unrated: boolean("unrated").default(false),
-    documentary: boolean("documentary").default(false),
-    is3d: boolean("is_3d").default(false),
-    ppv: boolean("ppv").default(false),
+    trash: integer("trash", { mode: "boolean" }).default(false),
+    complete: integer("complete", { mode: "boolean" }).default(false),
+    dubbed: integer("dubbed", { mode: "boolean" }).default(false),
+    subbed: integer("subbed", { mode: "boolean" }).default(false),
+    extended: integer("extended", { mode: "boolean" }).default(false),
+    converted: integer("converted", { mode: "boolean" }).default(false),
+    hardcoded: integer("hardcoded", { mode: "boolean" }).default(false),
+    proper: integer("proper", { mode: "boolean" }).default(false),
+    repack: integer("repack", { mode: "boolean" }).default(false),
+    retail: integer("retail", { mode: "boolean" }).default(false),
+    upscaled: integer("upscaled", { mode: "boolean" }).default(false),
+    remastered: integer("remastered", { mode: "boolean" }).default(false),
+    unrated: integer("unrated", { mode: "boolean" }).default(false),
+    documentary: integer("documentary", { mode: "boolean" }).default(false),
+    is3d: integer("is_3d", { mode: "boolean" }).default(false),
+    ppv: integer("ppv", { mode: "boolean" }).default(false),
 
     // Other metadata
-    releaseGroup: varchar("release_group", { length: 100 }),
-    edition: varchar("edition", { length: 100 }),
-    region: varchar("region", { length: 20 }),
-    network: varchar("network", { length: 100 }),
+    releaseGroup: text("release_group"),
+    edition: text("edition"),
+    region: text("region"),
+    network: text("network"),
     size: text("size"),
-    sizeBytes: text("size_bytes"), // Using text for bigint compatibility
-    site: varchar("site", { length: 100 }),
-    container: varchar("container", { length: 20 }),
-    extension: varchar("extension", { length: 20 }),
-    country: varchar("country", { length: 50 }),
+    sizeBytes: text("size_bytes"),
+    site: text("site"),
+    container: text("container"),
+    extension: text("extension"),
+    country: text("country"),
 
-    // Timestamps
-    ingestedAt: timestamp("ingested_at").defaultNow(),
+    // Timestamps (stored as ISO strings)
+    ingestedAt: text("ingested_at").$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
-    // Index for fuzzy text search (requires pg_trgm extension)
-    index("idx_torrents_cleaned_title_trgm").using(
-      "gin",
-      sql`${table.cleanedParsedTitle} gin_trgm_ops`
-    ),
-    // Index for IMDB lookups
+    // Indexes for common queries
+    index("idx_torrents_cleaned_title").on(table.cleanedParsedTitle),
     index("idx_torrents_imdb_id").on(table.imdbId),
-    // Index for year filtering
     index("idx_torrents_year").on(table.year),
-    // Index for adult content filtering
     index("idx_torrents_is_adult").on(table.isAdult),
-    // Index for trash filtering
     index("idx_torrents_trash").on(table.trash),
-    // Index for ingestion date
+    index("idx_torrents_category").on(table.category),
     index("idx_torrents_ingested_at").on(table.ingestedAt),
-    // GIN indexes for array columns
-    index("idx_torrents_seasons").using("gin", table.seasons),
-    index("idx_torrents_episodes").using("gin", table.episodes),
-    index("idx_torrents_languages").using("gin", table.languages),
   ]
 );
 
 // IMDB metadata cache
-export const imdbFiles = pgTable(
+export const imdbFiles = sqliteTable(
   "imdb_files",
   {
-    imdbId: varchar("imdb_id", { length: 20 }).primaryKey(),
-    category: varchar("category", { length: 20 }),
+    imdbId: text("imdb_id").primaryKey(),
+    category: text("category"),
     title: text("title").notNull(),
-    adult: boolean("adult").default(false),
+    adult: integer("adult", { mode: "boolean" }).default(false),
     year: integer("year"),
   },
   (table) => [
-    // Trigram index for fuzzy title search
-    index("idx_imdb_title_trgm").using(
-      "gin",
-      sql`${table.title} gin_trgm_ops`
-    ),
+    index("idx_imdb_title").on(table.title),
     index("idx_imdb_year").on(table.year),
     index("idx_imdb_category").on(table.category),
   ]
 );
 
 // Blacklisted torrents
-export const blacklistedItems = pgTable("blacklisted_items", {
-  infoHash: varchar("info_hash", { length: 40 }).primaryKey(),
+export const blacklistedItems = sqliteTable("blacklisted_items", {
+  infoHash: text("info_hash").primaryKey(),
   reason: text("reason"),
-  blacklistedAt: timestamp("blacklisted_at").defaultNow(),
+  blacklistedAt: text("blacklisted_at").$defaultFn(() => new Date().toISOString()),
 });
 
 // DMM import progress tracking
-export const parsedPages = pgTable("parsed_pages", {
+export const parsedPages = sqliteTable("parsed_pages", {
   page: integer("page").primaryKey(),
   entryCount: integer("entry_count").default(0),
-  parsedAt: timestamp("parsed_at").defaultNow(),
+  parsedAt: text("parsed_at").$defaultFn(() => new Date().toISOString()),
 });
 
 // Generic key-value metadata storage
-export const importMetadata = pgTable("import_metadata", {
-  key: varchar("key", { length: 255 }).primaryKey(),
-  value: jsonb("value"),
-  updatedAt: timestamp("updated_at").defaultNow(),
+export const importMetadata = sqliteTable("import_metadata", {
+  key: text("key").primaryKey(),
+  value: text("value", { mode: "json" }),
+  updatedAt: text("updated_at").$defaultFn(() => new Date().toISOString()),
 });
 
 // Type exports for use throughout the app

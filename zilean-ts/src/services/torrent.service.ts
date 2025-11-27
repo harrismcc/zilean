@@ -1,5 +1,5 @@
-import { eq, sql, and, inArray, gt, gte, lte, or, isNull } from "drizzle-orm";
-import { getDb, getSql } from "../db/client";
+import { eq, sql, and, inArray, like, or, desc } from "drizzle-orm";
+import { getDb, getSqlite } from "../db/client";
 import { torrents, blacklistedItems, type NewTorrent, type Torrent, type TorrentCategory } from "../db/schema";
 import { getConfig } from "../config";
 
@@ -32,7 +32,7 @@ export interface TorrentSearchResult {
   languages: string[] | null;
   size: string | null;
   sizeBytes: string | null;
-  similarity?: number;
+  rank?: number;
 }
 
 /**
@@ -108,56 +108,114 @@ export async function storeTorrents(
 }
 
 /**
- * Search for torrents by title using trigram similarity
+ * Search for torrents by title using FTS5 full-text search
  */
 export async function searchByTitle(
   query: string,
   limit = 100
 ): Promise<TorrentSearchResult[]> {
-  const config = getConfig();
-  const minScore = config.dmm.minimumScoreMatch;
-  const client = getSql();
+  const db = getDb();
+  const sqlite = getSqlite();
 
-  // Use raw SQL for trigram similarity search
-  const results = await client`
-    SELECT
-      info_hash,
-      raw_title,
-      parsed_title,
-      category,
-      imdb_id,
-      year,
-      resolution,
-      quality,
-      seasons,
-      episodes,
-      languages,
-      size,
-      size_bytes,
-      similarity(cleaned_parsed_title, ${query.toLowerCase()}) as similarity
-    FROM torrents
-    WHERE
-      trash = false
-      AND similarity(cleaned_parsed_title, ${query.toLowerCase()}) > ${minScore}
-    ORDER BY similarity DESC
-    LIMIT ${limit}
-  `;
+  // Prepare search query for FTS5 (escape special characters and add wildcards)
+  const searchTerms = query
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(t => t.length > 0)
+    .map(t => `"${t}"*`)
+    .join(" ");
+
+  if (!searchTerms) {
+    return [];
+  }
+
+  try {
+    // Use FTS5 for full-text search with ranking
+    const stmt = sqlite.prepare(`
+      SELECT
+        t.info_hash,
+        t.raw_title,
+        t.parsed_title,
+        t.category,
+        t.imdb_id,
+        t.year,
+        t.resolution,
+        t.quality,
+        t.seasons,
+        t.episodes,
+        t.languages,
+        t.size,
+        t.size_bytes,
+        bm25(torrents_fts) as rank
+      FROM torrents_fts
+      JOIN torrents t ON torrents_fts.info_hash = t.info_hash
+      WHERE torrents_fts MATCH ?
+        AND t.trash = 0
+      ORDER BY rank
+      LIMIT ?
+    `);
+
+    const results = stmt.all(searchTerms, limit) as Array<Record<string, unknown>>;
+
+    return results.map((r) => ({
+      infoHash: r.info_hash as string,
+      rawTitle: r.raw_title as string,
+      parsedTitle: r.parsed_title as string | null,
+      category: r.category as TorrentCategory | null,
+      imdbId: r.imdb_id as string | null,
+      year: r.year as number | null,
+      resolution: r.resolution as string | null,
+      quality: r.quality as string | null,
+      seasons: r.seasons ? JSON.parse(r.seasons as string) : null,
+      episodes: r.episodes ? JSON.parse(r.episodes as string) : null,
+      languages: r.languages ? JSON.parse(r.languages as string) : null,
+      size: r.size as string | null,
+      sizeBytes: r.size_bytes as string | null,
+      rank: r.rank as number,
+    }));
+  } catch {
+    // Fallback to LIKE search if FTS5 not available
+    return searchByTitleFallback(query, limit);
+  }
+}
+
+/**
+ * Fallback search using LIKE (when FTS5 is not available)
+ */
+async function searchByTitleFallback(
+  query: string,
+  limit = 100
+): Promise<TorrentSearchResult[]> {
+  const db = getDb();
+
+  const searchPattern = `%${query.toLowerCase().replace(/\s+/g, "%")}%`;
+
+  const results = await db
+    .select()
+    .from(torrents)
+    .where(
+      and(
+        eq(torrents.trash, false),
+        like(torrents.cleanedParsedTitle, searchPattern)
+      )
+    )
+    .limit(limit);
 
   return results.map((r) => ({
-    infoHash: r.info_hash as string,
-    rawTitle: r.raw_title as string,
-    parsedTitle: r.parsed_title as string | null,
-    category: r.category as TorrentCategory | null,
-    imdbId: r.imdb_id as string | null,
-    year: r.year as number | null,
-    resolution: r.resolution as string | null,
-    quality: r.quality as string | null,
-    seasons: r.seasons as number[] | null,
-    episodes: r.episodes as number[] | null,
-    languages: r.languages as string[] | null,
-    size: r.size as string | null,
-    sizeBytes: r.size_bytes as string | null,
-    similarity: r.similarity as number,
+    infoHash: r.infoHash,
+    rawTitle: r.rawTitle,
+    parsedTitle: r.parsedTitle,
+    category: r.category,
+    imdbId: r.imdbId,
+    year: r.year,
+    resolution: r.resolution,
+    quality: r.quality,
+    seasons: r.seasons,
+    episodes: r.episodes,
+    languages: r.languages,
+    size: r.size,
+    sizeBytes: r.sizeBytes,
   }));
 }
 
@@ -169,169 +227,82 @@ export async function searchFiltered(
 ): Promise<TorrentSearchResult[]> {
   const config = getConfig();
   const maxResults = filter.limit || config.dmm.maxFilteredResults;
-  const minScore = config.dmm.minimumScoreMatch;
-  const client = getSql();
+  const db = getDb();
 
-  // Build WHERE conditions
-  const conditions: string[] = [];
-  const params: Record<string, unknown> = {};
+  // Build conditions array
+  const conditions = [];
 
   if (filter.excludeTrash !== false) {
-    conditions.push("trash = false");
+    conditions.push(eq(torrents.trash, false));
   }
 
   if (filter.excludeAdult !== false) {
-    conditions.push("is_adult = false");
+    conditions.push(eq(torrents.isAdult, false));
   }
 
   if (filter.imdbId) {
-    conditions.push("imdb_id = ${imdbId}");
-    params.imdbId = filter.imdbId.toLowerCase();
+    conditions.push(eq(torrents.imdbId, filter.imdbId.toLowerCase()));
   }
 
   if (filter.year) {
-    conditions.push("year = ${year}");
-    params.year = filter.year;
+    conditions.push(eq(torrents.year, filter.year));
   }
 
   if (filter.category) {
-    conditions.push("category = ${category}");
-    params.category = filter.category;
+    conditions.push(eq(torrents.category, filter.category));
   }
 
   if (filter.resolution) {
-    conditions.push("resolution = ${resolution}");
-    params.resolution = filter.resolution;
+    conditions.push(eq(torrents.resolution, filter.resolution));
   }
 
+  // For query-based search, use FTS5 or LIKE
+  if (filter.query) {
+    const searchPattern = `%${filter.query.toLowerCase().replace(/\s+/g, "%")}%`;
+    conditions.push(like(torrents.cleanedParsedTitle, searchPattern));
+  }
+
+  // Season/episode filtering with JSON
   if (filter.season !== undefined) {
-    conditions.push("seasons @> ${season}::jsonb");
-    params.season = JSON.stringify([filter.season]);
+    conditions.push(
+      like(torrents.seasons, `%${filter.season}%`)
+    );
   }
 
   if (filter.episode !== undefined) {
-    conditions.push("episodes @> ${episode}::jsonb");
-    params.episode = JSON.stringify([filter.episode]);
+    conditions.push(
+      like(torrents.episodes, `%${filter.episode}%`)
+    );
   }
 
   if (filter.language) {
-    conditions.push("languages @> ${language}::jsonb");
-    params.language = JSON.stringify([filter.language]);
+    conditions.push(
+      like(torrents.languages, `%"${filter.language}"%`)
+    );
   }
 
-  // Text search with similarity
-  let orderBy = "ingested_at DESC";
-  let selectSimilarity = "0 as similarity";
-
-  if (filter.query) {
-    conditions.push(`similarity(cleaned_parsed_title, ${client.escapeLiteral(filter.query.toLowerCase())}) > ${minScore}`);
-    selectSimilarity = `similarity(cleaned_parsed_title, ${client.escapeLiteral(filter.query.toLowerCase())}) as similarity`;
-    orderBy = "similarity DESC";
-  }
-
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  // Build and execute query
-  const queryStr = `
-    SELECT
-      info_hash,
-      raw_title,
-      parsed_title,
-      category,
-      imdb_id,
-      year,
-      resolution,
-      quality,
-      seasons,
-      episodes,
-      languages,
-      size,
-      size_bytes,
-      ${selectSimilarity}
-    FROM torrents
-    ${whereClause}
-    ORDER BY ${orderBy}
-    LIMIT ${maxResults}
-    OFFSET ${filter.offset || 0}
-  `;
-
-  // For parameterized queries, we need to use a simpler approach
-  // Build dynamic query with postgres.js
-  let results;
-
-  if (filter.query && filter.imdbId) {
-    results = await client`
-      SELECT
-        info_hash, raw_title, parsed_title, category, imdb_id, year,
-        resolution, quality, seasons, episodes, languages, size, size_bytes,
-        similarity(cleaned_parsed_title, ${filter.query.toLowerCase()}) as similarity
-      FROM torrents
-      WHERE trash = false
-        AND is_adult = ${filter.excludeAdult !== false ? false : sql`is_adult`}
-        AND imdb_id = ${filter.imdbId.toLowerCase()}
-        AND similarity(cleaned_parsed_title, ${filter.query.toLowerCase()}) > ${minScore}
-      ORDER BY similarity DESC
-      LIMIT ${maxResults}
-      OFFSET ${filter.offset || 0}
-    `;
-  } else if (filter.query) {
-    results = await client`
-      SELECT
-        info_hash, raw_title, parsed_title, category, imdb_id, year,
-        resolution, quality, seasons, episodes, languages, size, size_bytes,
-        similarity(cleaned_parsed_title, ${filter.query.toLowerCase()}) as similarity
-      FROM torrents
-      WHERE trash = false
-        AND is_adult = ${filter.excludeAdult !== false ? false : sql`is_adult`}
-        AND similarity(cleaned_parsed_title, ${filter.query.toLowerCase()}) > ${minScore}
-      ORDER BY similarity DESC
-      LIMIT ${maxResults}
-      OFFSET ${filter.offset || 0}
-    `;
-  } else if (filter.imdbId) {
-    results = await client`
-      SELECT
-        info_hash, raw_title, parsed_title, category, imdb_id, year,
-        resolution, quality, seasons, episodes, languages, size, size_bytes,
-        0 as similarity
-      FROM torrents
-      WHERE trash = false
-        AND is_adult = ${filter.excludeAdult !== false ? false : sql`is_adult`}
-        AND imdb_id = ${filter.imdbId.toLowerCase()}
-      ORDER BY ingested_at DESC
-      LIMIT ${maxResults}
-      OFFSET ${filter.offset || 0}
-    `;
-  } else {
-    results = await client`
-      SELECT
-        info_hash, raw_title, parsed_title, category, imdb_id, year,
-        resolution, quality, seasons, episodes, languages, size, size_bytes,
-        0 as similarity
-      FROM torrents
-      WHERE trash = false
-        AND is_adult = ${filter.excludeAdult !== false ? false : sql`is_adult`}
-      ORDER BY ingested_at DESC
-      LIMIT ${maxResults}
-      OFFSET ${filter.offset || 0}
-    `;
-  }
+  const results = await db
+    .select()
+    .from(torrents)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(torrents.ingestedAt))
+    .limit(maxResults)
+    .offset(filter.offset || 0);
 
   return results.map((r) => ({
-    infoHash: r.info_hash as string,
-    rawTitle: r.raw_title as string,
-    parsedTitle: r.parsed_title as string | null,
-    category: r.category as TorrentCategory | null,
-    imdbId: r.imdb_id as string | null,
-    year: r.year as number | null,
-    resolution: r.resolution as string | null,
-    quality: r.quality as string | null,
-    seasons: r.seasons as number[] | null,
-    episodes: r.episodes as number[] | null,
-    languages: r.languages as string[] | null,
-    size: r.size as string | null,
-    sizeBytes: r.size_bytes as string | null,
-    similarity: r.similarity as number,
+    infoHash: r.infoHash,
+    rawTitle: r.rawTitle,
+    parsedTitle: r.parsedTitle,
+    category: r.category,
+    imdbId: r.imdbId,
+    year: r.year,
+    resolution: r.resolution,
+    quality: r.quality,
+    seasons: r.seasons,
+    episodes: r.episodes,
+    languages: r.languages,
+    size: r.size,
+    sizeBytes: r.sizeBytes,
   }));
 }
 
@@ -366,9 +337,9 @@ export async function getBlacklistedHashes(): Promise<string[]> {
  * Get total torrent count
  */
 export async function getTorrentCount(): Promise<number> {
-  const client = getSql();
-  const result = await client`SELECT COUNT(*) as count FROM torrents`;
-  return parseInt(result[0].count as string, 10);
+  const sqlite = getSqlite();
+  const result = sqlite.prepare("SELECT COUNT(*) as count FROM torrents").get() as { count: number };
+  return result.count;
 }
 
 /**
@@ -398,12 +369,12 @@ export async function* streamAllTorrents(
 }
 
 /**
- * Vacuum and analyze indexes
+ * Vacuum database
  */
 export async function vacuumIndexes(): Promise<void> {
-  const client = getSql();
-  await client`VACUUM ANALYZE torrents`;
-  console.log("Vacuumed and analyzed torrents table");
+  const sqlite = getSqlite();
+  sqlite.exec("VACUUM");
+  console.log("Vacuumed database");
 }
 
 /**

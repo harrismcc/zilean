@@ -52,8 +52,7 @@ const TorrentsConfigSchema = z.object({
 });
 
 const DatabaseConfigSchema = z.object({
-  connectionString: z.string().default("postgresql://zilean:zilean@localhost:5432/zilean"),
-  maxConnections: z.number().default(20),
+  connectionString: z.string().default("./data/zilean.db"),
 });
 
 const ConfigSchema = z.object({

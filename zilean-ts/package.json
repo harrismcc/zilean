@@ -19,7 +19,6 @@
     "hono": "^4.6.0",
     "@hono/zod-validator": "^0.4.0",
     "drizzle-orm": "^0.36.0",
-    "postgres": "^3.4.5",
     "zod": "^3.23.8",
     "parse-torrent-title": "^2.1.0",
     "croner": "^9.0.0",
